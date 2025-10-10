@@ -1,124 +1,114 @@
-name: PANSS CI (Maven + MySQL + Redis + secret.properties)
+name: Java CI with Maven (MySQL + Redis) panss
 
 on:
   push:
-    branches: ["master"]
+    branches: [ "master" ]
   pull_request:
-    branches: ["master"]
+    branches: [ "master" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:3306/panss_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+      SPRING_REDIS_HOST: 127.0.0.1
+      SPRING_REDIS_PORT: 6379
+      SPRING_REDIS_PASSWORD: ""
+
     services:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
-          MYSQL_DATABASE: panss_db
+          MYSQL_ROOT_PASSWORD: "03@March$2025"
+          MYSQL_DATABASE: leave_managment
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -uroot -p${{ secrets.MYSQL_ROOT_PASSWORD }}"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -P 3306 --silent"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=10
+          --health-retries=30
 
       redis:
-        image: redis:6.2
+        image: redis:7
         ports:
           - 6379:6379
         options: >-
-          --health-cmd="redis-cli ping || exit 1"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17 and cache Maven
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          java-version: "17"
+          distribution: "temurin"
           cache: maven
 
-      - name: Install CLI tools for health checks
+      - name: Install MySQL & Redis clients
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y default-mysql-client redis-tools
+          sudo apt-get install -y default-mysql-client redis-tools netcat-openbsd
+
+      - name: Wait for MySQL to be ready
+        run: |
+          echo "Waiting for MySQL..."
+          for i in {1..30}; do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -u root -p"${SPRING_DATASOURCE_PASSWORD}" --silent; then
+              echo "✅ MySQL is up"
+              break
+            fi
+            echo "MySQL not ready yet... ($i)"
+            sleep 2
+          done
+
+      - name: Wait for Redis to be ready
+        run: |
+          echo "Waiting for Redis..."
+          for i in {1..30}; do
+            if redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
+              echo "✅ Redis is up"
+              break
+            fi
+            echo "Redis not ready yet... ($i)"
+            sleep 1
+          done
 
       - name: Find pom.xml (auto-detect)
         id: find_pom
         run: |
+          set -e
           POM_PATH=$(find . -maxdepth 5 -type f -name "pom.xml" | head -n 1 || true)
           if [ -z "$POM_PATH" ]; then
             echo "No pom.xml found in repository!"
             exit 1
           fi
+          echo "Found pom.xml at: $POM_PATH"
           echo "POM_PATH=$POM_PATH" >> $GITHUB_ENV
 
-      - name: Wait for MySQL to be ready
+      - name: Show detected pom location (debug)
         run: |
-          echo "Waiting for MySQL..."
-          for i in $(seq 1 60); do
-            if mysqladmin ping -h127.0.0.1 -uroot -p"${{ secrets.MYSQL_ROOT_PASSWORD }}" >/dev/null 2>&1; then
-              echo "MySQL is up!"
-              break
-            fi
-            echo "MySQL not ready ($i)..."
-            sleep 2
-          done
-          if ! mysqladmin ping -h127.0.0.1 -uroot -p"${{ secrets.MYSQL_ROOT_PASSWORD }}" >/dev/null 2>&1; then
-            echo "MySQL did not become ready" >&2
-            exit 1
-          fi
+          echo "Using POM: ${{ env.POM_PATH }}"
+          echo "Module directory:"
+          dirname "${{ env.POM_PATH }}"
+          ls -la "$(dirname "${{ env.POM_PATH }}")" || true
 
-      - name: Wait for Redis to be ready
-        run: |
-          echo "Waiting for Redis..."
-          for i in $(seq 1 60); do
-            if redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
-              echo "Redis is up!"
-              break
-            fi
-            echo "Redis not ready ($i)..."
-            sleep 1
-          done
-          if ! redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
-            echo "Redis did not become ready" >&2
-            exit 1
-          fi
+      - name: Build with Maven (auto-detected pom)
+        run: mvn -B -f "${{ env.POM_PATH }}" package
 
-      - name: Create secret.properties from GitHub Secrets
-        run: |
-          module_dir=$(dirname "${{ env.POM_PATH }}")
-          resources_dir="$module_dir/src/main/resources"
-          mkdir -p "$resources_dir"
-          # Write secret.properties with expanded secrets (do NOT print its contents)
-          cat > "$resources_dir/secret.properties" <<EOF
-# Auto-generated by GitHub Actions — do NOT commit
-DB_URL=jdbc:mysql://127.0.0.1:3306/panss_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
-DB_USERNAME=root
-DB_PASSWORD=${{ secrets.MYSQL_ROOT_PASSWORD }}
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-# REDIS_PASSWORD=   # optional - add if you set REDIS_PASSWORD secret
-EOF
-          echo "Wrote secret.properties to $resources_dir/secret.properties (contents not shown)"
-
-      - name: Show files (debug)
-        run: |
-          module_dir=$(dirname "${{ env.POM_PATH }}")
-          echo "Module dir: $module_dir"
-          ls -la "$module_dir" || true
-          echo "Resources dir listing:"
-          ls -la "$module_dir/src/main/resources" || true
-
-      - name: Build with Maven (clean package)
-        env:
-          MAVEN_OPTS: "-Xmx1024m"
-        run: |
-          mvn -B -f "${{ env.POM_PATH }}" clean package
+#      - name: Build & push Docker image
+#        uses: mr-smithers-excellent/docker-build-push@v5
+#        with:
+#          image: repo/image
+#          tags: v1, latest
+#          registry: registry-url.io
+#          dockerfile: Dockerfile.ci
+#          username: ${{ secrets.DOCKER_USERNAME }}
+#          password: ${{ secrets.DOCKER_PASSWORD }}
