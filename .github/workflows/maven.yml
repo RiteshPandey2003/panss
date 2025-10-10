@@ -1,4 +1,4 @@
-name: Java CI with Maven (minimal)
+name: Java CI with Maven (auto-detect pom.xml)
 
 on:
   push:
@@ -21,5 +21,24 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Build with Maven
-        run: mvn -B -V -DskipTests package
+      - name: Find pom.xml (auto-detect)
+        id: find_pom
+        run: |
+          POM_PATH=$(find . -maxdepth 5 -type f -name "pom.xml" | head -n 1 || true)
+          if [ -z "$POM_PATH" ]; then
+            echo "No pom.xml found in repository!"
+            exit 1
+          fi
+          echo "Found pom: $POM_PATH"
+          echo "POM_PATH=$POM_PATH" >> $GITHUB_ENV
+
+      - name: Show module and resources (debug)
+        run: |
+          echo "Using POM: ${{ env.POM_PATH }}"
+          dirname "${{ env.POM_PATH }}"
+          ls -la $(dirname "${{ env.POM_PATH }}")
+
+      - name: Build with Maven using detected pom.xml
+        env:
+          MAVEN_OPTS: "-Xmx1024m"
+        run: mvn -B -f "${{ env.POM_PATH }}" clean package
