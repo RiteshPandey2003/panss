@@ -123,10 +123,4 @@ EOF
         run: |
           mvn -B -f "${{ env.POM_PATH }}" clean package
 
-      - name: Upload artifact (optional)
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: panss-jar
-          path: |
-            $(dirname "${{ env.POM_PATH }}")/target/*.jar
+ 
